@@ -1,0 +1,175 @@
+
+
+--Finding the Table Names with Schema
+
+SELECT * FROM INFORMATION_SCHEMA.TABLES 
+where TABLE_TYPE='BASE TABLE'
+order by TABLE_NAME
+
+--For Views 
+SELECT * FROM INFORMATION_SCHEMA.TABLES 
+where TABLE_TYPE='view'
+order by TABLE_NAME
+
+--Column Details Table Wise
+SELECT A.TABLE_CATALOG AS [Database],a.TABLE_SCHEMA,a.TABLE_NAME,a.COLUMN_NAME,a.COLUMN_DEFAULT as DefaultValue,
+		a.IS_NULLABLE,a.DATA_TYPE,a.CHARACTER_MAXIMUM_LENGTH as [Length],a.NUMERIC_PRECISION as Precision,a.NUMERIC_SCALE as Scale
+FROM INFORMATION_SCHEMA.COLUMNS A
+inner join INFORMATION_SCHEMA.TABLES  B ON A.TABLE_NAME=B.TABLE_NAME
+WHERE TABLE_TYPE='BASE TABLE' 
+ORDER BY A.TABLE_NAME
+
+--Column Details for Views
+SELECT A.TABLE_CATALOG AS [Database],a.TABLE_SCHEMA,a.TABLE_NAME,a.COLUMN_NAME,a.COLUMN_DEFAULT as DefaultValue,
+		a.IS_NULLABLE,a.DATA_TYPE,a.CHARACTER_MAXIMUM_LENGTH as [Length],a.NUMERIC_PRECISION as Precision,a.NUMERIC_SCALE as Scale
+FROM INFORMATION_SCHEMA.COLUMNS A
+inner join INFORMATION_SCHEMA.TABLES  B ON A.TABLE_NAME=B.TABLE_NAME
+WHERE TABLE_TYPE!='BASE TABLE' 
+ORDER BY A.TABLE_NAME
+
+--Primary Key and Foreign Key Details Table wise
+SELECT TABLE_CATALOG as [Database],TABLE_SCHEMA,TABLE_NAME,CONSTRAINT_NAME,COLUMN_NAME
+FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+order by TABLE_NAME
+
+--Stored Procedure Details
+Select distinct object_name(X.id) as SP_Name,object_name(X.depid) as DepTables
+from
+(
+select id,depid
+from sysdepends
+)X
+order by SP_Name
+
+--------------------------------------------------------------------------------------------------------------------
+
+-- Count of Records with Table Names
+DECLARE @TableRowCounts TABLE ([TableName] VARCHAR(128), [RowCount] INT) ;
+INSERT INTO @TableRowCounts ([TableName], [RowCount])
+EXEC sp_MSforeachtable 'SELECT ''?'' [TableName], COUNT(*) [RowCount] FROM ?' ;
+SELECT  TableName, [RowCount]
+FROM @TableRowCounts
+ORDER BY [TableName]
+
+
+--------------------------------------------------------------------------------------------------------------------
+--Table Wise Index Details
+SELECT T.TABLE_NAME as [Table Name], coalesce(I.name,'') as [Index Name], 
+		coalesce(COL_NAME(IC.object_id,IC.column_id),'') AS [Column Name], I.type_desc as Type    
+FROM INFORMATION_SCHEMA.TABLES T  
+inner join sys.indexes I on T.TABLE_NAME=OBJECT_NAME(I.object_id)  
+left JOIN sys.index_columns IC ON I.object_id = IC.object_id 
+AND I.index_id = IC.index_id  
+and T.TABLE_TYPE='BASE TABLE'  
+order by T.TABLE_NAME
+
+--------------------------------------------------------------------------------------------------------------------
+
+--Retrieving historical Query
+SELECT t.[text]
+FROM sys.dm_exec_cached_plans AS p
+CROSS APPLY sys.dm_exec_sql_text(p.plan_handle) AS t
+WHERE t.[text] LIKE N'%words inside query%';
+
+
+---------------------------------------------------------------------------------------------------------------------
+--Getting size of tables 
+SELECT 
+    t.NAME AS TableName,
+    s.Name AS SchemaName,
+    p.rows,
+    SUM(a.total_pages) * 8 AS TotalSpaceKB, 
+    CAST(ROUND(((SUM(a.total_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS TotalSpaceMB,
+    SUM(a.used_pages) * 8 AS UsedSpaceKB, 
+    CAST(ROUND(((SUM(a.used_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS UsedSpaceMB, 
+    (SUM(a.total_pages) - SUM(a.used_pages)) * 8 AS UnusedSpaceKB,
+    CAST(ROUND(((SUM(a.total_pages) - SUM(a.used_pages)) * 8) / 1024.00, 2) AS NUMERIC(36, 2)) AS UnusedSpaceMB
+FROM 
+    sys.tables t
+INNER JOIN      
+    sys.indexes i ON t.OBJECT_ID = i.object_id
+INNER JOIN 
+    sys.partitions p ON i.object_id = p.OBJECT_ID AND i.index_id = p.index_id
+INNER JOIN 
+    sys.allocation_units a ON p.partition_id = a.container_id
+LEFT OUTER JOIN 
+    sys.schemas s ON t.schema_id = s.schema_id
+WHERE 
+    t.NAME NOT LIKE 'dt%' 
+    AND t.is_ms_shipped = 0
+    AND i.OBJECT_ID > 255 
+GROUP BY 
+    t.Name, s.Name, p.Rows
+ORDER BY  t.Name
+
+---------------------------------------------------------------------------------------------------------------------------------
+-- Index Suggestion by DMV
+	
+Select x.runtime,x.estimated_improvement,x.create_index_statement as [Index],
+		replace (x.DatabaseName,']','') as DatabaseName,x.TableName,
+		x.equality_columns,
+       x.inequality_columns
+from(
+SELECT CONVERT (VARCHAR(30), Getdate(), 126) AS runtime,
+       CONVERT (DECIMAL (28, 1), migs.avg_total_user_cost *migs.avg_user_impact * ( migs.user_seeks + migs.user_scans )) AS estimated_improvement,
+       'CREATE INDEX missing_index_'
+       + CONVERT (VARCHAR, mig.index_group_handle)
+       + '_' + CONVERT (VARCHAR, mid.index_handle)
+       + ' ON ' + mid.statement + ' ('
+       + Isnull (mid.equality_columns, '') + CASE WHEN mid.equality_columns IS NOT NULL AND mid.inequality_columns IS NOT NULL THEN ',' 
+	   ELSE '' END
+       + Isnull (mid.inequality_columns, '') + ')'
+       + Isnull (' INCLUDE (' + mid.included_columns + ')', '')  AS  create_index_statement,
+       left(Substring(mid.statement, Charindex('[', mid.statement) + 1,( Len(mid.statement) ) - Charindex('1', mid.statement)+4),Charindex('1', mid.statement)) AS  DatabaseName,
+       Replace(Substring(mid.statement, Charindex('.', mid.statement) + 8,( Len(mid.statement) ) - Charindex('.', mid.statement)), ']', '') AS TableName,
+       mid.equality_columns,
+       mid.inequality_columns
+FROM   sys.dm_db_missing_index_groups mig
+       JOIN sys.dm_db_missing_index_group_stats migs
+         ON migs.group_handle = mig.index_group_handle
+       JOIN sys.dm_db_missing_index_details mid
+         ON mig.index_handle = mid.index_handle 
+		 )x
+where x.DatabaseName !=''
+order by DatabaseName,estimated_improvement desc
+
+---------------------------------------------------------------------------------------------------------------------------------------
+Query to see no of connection in a server
+
+SELECT DB_NAME(dbid) AS DBName,
+COUNT(dbid) AS NumberOfConnections,
+loginame
+FROM    sys.sysprocesses
+GROUP BY dbid, loginame
+ORDER BY DB_NAME(dbid)
+
+---------------------------------------------------------------------------------------------------------------------------------------
+Finding concurrent db connections 
+
+
+SELECT 
+    DB_NAME(dbid) as DBName, 
+    COUNT(dbid) as NumberOfConnections,
+    loginame as LoginName
+FROM
+    sys.sysprocesses
+WHERE 
+	--login_time between '2023-07-02 00:00:38.093' and '2023-07-02 21:59:38.093'
+    --and 
+	dbid > 0
+GROUP BY 
+    dbid, loginame
+	
+	
+--------------------------------------------------------------------------------------------------------------------------------------
+If the properties of databases not opening in ssms
+
+SELECT DB_ID('wuskusudbkdpcommunication01') AS [db_id(database_name)], database_name , backup_start_date, machine_name
+FROM msdb..backupset WHERE [type] = 'D'
+and database_name = 'wuskusudbkdptelematics01'
+ ORDER BY 1,2
+
+
+ EXEC msdb.dbo.sp_delete_database_backuphistory @database_name = N'wuskusudbkdptelematics01'
+ 
+ ------------------------------------------------------------------------------------------------------------------------------------

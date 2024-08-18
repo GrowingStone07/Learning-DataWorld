@@ -1,0 +1,127 @@
+
+drop table #testtbl
+drop table #testcolumn
+drop table ##temp
+drop table #tblvolume
+
+
+create table #tblvolume
+(
+	TableName  nvarchar(max),
+	[RowCount]	int
+)
+
+create table #testtbl
+(
+	ID int identity(1,1),
+	TableName  nvarchar(max)
+)
+
+insert into #testtbl
+SELECT distinct B.TABLE_NAME FROM INFORMATION_SCHEMA.TABLES B
+inner join INFORMATION_SCHEMA.COLUMNS A ON A.TABLE_NAME=B.TABLE_NAME
+where B.TABLE_TYPE='BASE TABLE'
+and A.DATA_TYPE like'%date%'
+order by B.TABLE_NAME
+
+create table #testcolumn
+(
+	ID int identity(1,1),
+	TableName1 nvarchar(max),
+	TableName2 nvarchar(max),
+	ColumnName nvarchar(max)
+)
+
+declare @table nvarchar(max);
+declare @col nvarchar(max);
+declare @sql nvarchar(max);
+declare @order nvarchar(max);
+declare @id int =1  declare @id1 int =1
+declare @count int = (select count(*) from #testtbl)
+
+while (@id<=1)
+begin
+	while (@id1<=@count)
+	begin
+	set @table = (select TableName from #testtbl where id = @id1)  print 'table is '+ @table
+	set @sql = 'Insert into #testcolumn(TableName1,TableName2,ColumnName)
+	select A.TABLE_NAME,A.TABLE_NAME,B.name 
+	from INFORMATION_SCHEMA.TABLES  A
+	inner join sys.columns B on B.object_id= object_id('+'''dbo.'+@table+''''+')
+	and A.TABLE_TYPE='+'''BASE TABLE'''+
+	' and A.TABLE_NAME = '''+@table+'''
+	and system_type_id in (61,42)
+	ORDER BY A.TABLE_NAME'
+
+	execute (@sql)
+	set @id1 = @id1 + 1
+	end
+
+set @id = @id + 1
+end
+
+-----------------------------------------------------------------------------------------------------------------------------------------
+declare @col1 nvarchar(max)   declare @sql1 nvarchar(max)
+set @col1 = stuff((select  X.ColumnName from
+(select distinct ','+ quotename(ColumnName) as ColumnName from #testcolumn) X
+order by X.ColumnName
+for XML PATH(''),type).value('.','NVARCHAR(MAX)'),1,1,'')
+
+set @sql1 = ' select * into ##temp from(
+select TableName1, ' + @col1+ 
+'from (select TableName1,TableName2,ColumnName from #testcolumn) as source_tbl
+pivot
+(max(TableName2) for ColumnName in ('+@col1+'))
+as pivot_table)z'
+
+execute(@sql1)
+truncate table ##temp
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+set @id =1
+set @id1 = 1
+set @count  = (select count(*) from #testtbl)
+
+while (@id <= 1)
+begin
+	while(@id1<=@count)
+	begin
+	set @table = (select TableName from #testtbl where id = @id1)  
+
+	set @col = stuff((select distinct ','+ quotename(ColumnName) as ColumnName from #testcolumn where TableName1 = @table
+	for XML PATH(''),type).value('.','NVARCHAR(MAX)'),1,1,'')
+	set @order = (select replace(@col,']','] desc'))
+	set @sql = ' Insert into ##temp(TableName1,'+@col+')
+				select top 1 '+''''+ @table +''''+',' + @col + ' from [' + @table +']' + 'order by ' + @order
+	execute(@sql)	
+	print @sql
+	set @id1 = @id1 +1
+	end
+set @id = @id +1
+end
+
+
+--select * from #testcolumn
+
+
+
+DECLARE @TableRowCounts TABLE ([TableName] VARCHAR(128), [RowCount] INT) ;
+INSERT INTO @TableRowCounts ([TableName], [RowCount])
+EXEC sp_MSforeachtable 'SELECT ''?'' [TableName], COUNT(*) [RowCount] FROM ?' ;
+Insert into #tblvolume
+SELECT replace([TableName],'[dbo].','') as TableName, [RowCount]
+FROM @TableRowCounts
+ORDER BY [TableName]
+
+
+update #tblvolume
+set TableName = replace(tableName,'[','')
+update #tblvolume
+set TableName = replace(tableName,']','')
+
+
+
+select B.[RowCount], A.* 
+from ##temp  A
+inner join  #tblvolume B on A.tableName1=B.TableName
+

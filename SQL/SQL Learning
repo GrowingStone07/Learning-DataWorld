@@ -1,0 +1,1 @@
+Replace(column1,'0','') --> It'll Replace all the zeros to blank in the values of column1. 2022->222,2006->26
